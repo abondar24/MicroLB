@@ -53,28 +53,37 @@ func (lb *LoadBalancer) tcpHandler(conn net.Conn) {
 
 func (lb *LoadBalancer) StartHttpLoadBalancer(port string) {
 	http.HandleFunc("/", lb.httpHandler)
+	http.HandleFunc("/favicon.ico", doNothing)
 	log.Printf("Starting HTTP load balancer on port %s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
+func doNothing(w http.ResponseWriter, r *http.Request) {}
+
 func (lb *LoadBalancer) httpHandler(w http.ResponseWriter, r *http.Request) {
 	backend := lb.getNextBackend()
 
-	req := r.Clone(r.Context())
-	req.URL.Scheme = "http"
-	req.URL.Host = backend
-	log.Printf("Forwarding HTTP request to %s\n", req.URL.String())
+	proxyReq, err := http.NewRequest(r.Method, "http://"+backend+r.RequestURI, r.Body)
+	if err != nil {
+		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	resp, err := http.DefaultTransport.RoundTrip(req)
+	log.Printf("Forwarding HTTP request to %s\n", proxyReq.URL.String())
+
+	resp, err := http.DefaultTransport.RoundTrip(proxyReq)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	for k, v := range resp.Header {
-		w.Header()[k] = v
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
 	}
+
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 
